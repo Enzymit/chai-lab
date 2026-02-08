@@ -8,6 +8,7 @@ import logging
 
 import typer
 
+from chai_lab.batch import run_batch_inference
 from chai_lab.chai1 import run_inference
 from chai_lab.data.parsing.msas.aligned_pqt import merge_a3m_in_directory
 
@@ -36,6 +37,10 @@ def citation():
 def cli():
     app = typer.Typer()
     app.command("fold", help="Run Chai-1 to fold a complex.")(run_inference)
+    app.command(
+        "fold-batch",
+        help="Run Chai-1 on all fasta files in a directory, distributed across GPUs.",
+    )(run_batch_inference)
     app.command(
         "a3m-to-pqt",
         help="Convert all a3m files in a directory for a *single sequence* into a aligned parquet file",

@@ -13,8 +13,14 @@ import multiprocessing
 import queue as _queue
 from enum import Enum
 from functools import wraps
-from multiprocessing import Process, Queue
 from typing import Any
+
+# Use fork context explicitly so that the local `handler` closure does not need
+# to be picklable.  This is important when the default start method has been
+# changed to "spawn" (e.g. inside a spawned child process).
+_fork_ctx = multiprocessing.get_context("fork")
+Process = _fork_ctx.Process
+Queue = _fork_ctx.Queue
 
 from typing_extensions import assert_never
 
