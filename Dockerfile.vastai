@@ -75,6 +75,32 @@ COPY . /opt/chai-lab
 RUN . $VIRTUAL_ENV/bin/activate \
   && pip install -e /opt/chai-lab
 
+# Pre-download Chai-1 inference assets (avoids runtime downloads)
+RUN . $VIRTUAL_ENV/bin/activate \
+  && python - <<'PY2'
+from chai_lab.utils.paths import cached_conformers, chai1_component
+from chai_lab.data.dataset.embeddings.esm import ESM_URL
+from chai_lab.utils.paths import download_if_not_exists, downloads_path
+
+# core helper cache
+cached_conformers.get_path()
+
+# ESM embedding model used during inference
+download_if_not_exists(ESM_URL, downloads_path / "esm" / "traced_sdpa_esm2_t36_3B_UR50D_fp16.pt")
+
+# Chai-1 exported model components
+for name in [
+    "feature_embedding.pt",
+    "bond_loss_input_proj.pt",
+    "token_embedder.pt",
+    "trunk.pt",
+    "diffusion_module.pt",
+    "confidence_head.pt",
+]:
+    chai1_component(name)
+PY2
+
+
 WORKDIR /opt/chai-lab
 
 # making sure envvars are set in all shells
