@@ -1,0 +1,121 @@
+# syntax=docker/dockerfile:1
+ARG BASE_IMAGE=nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04
+FROM ${BASE_IMAGE}
+
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    DEBIAN_FRONTEND=noninteractive \
+    EDITOR=vim \
+    MYPY_CACHE_DIR=/tmp/.chai_lab_mypy_cache \
+    PYTHONUNBUFFERED=TRUE \
+    PYTHONFAULTHANDLER=1 \
+    PYTHONPYCACHEPREFIX=/tmp/.chai_lab_pycache \
+    UV_HTTP_TIMEOUT=1000 \
+    VIRTUAL_ENV=/opt/venv \
+    CUDA_HOME=/usr/local/cuda \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64
+
+# SkyPilot connects to Docker workers over SSH after starting the container.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        aria2 \
+        build-essential \
+        ca-certificates \
+        clang \
+        curl \
+        git \
+        gnupg \
+        htop \
+        kalign \
+        libgomp1 \
+        libibverbs1 \
+        librdmacm1 \
+        libstdc++6 \
+        nano \
+        openssh-server \
+        openssh-client \
+        psmisc \
+        python3.10 \
+        python3.10-dev \
+        python3.10-venv \
+        rsync \
+        socat \
+        sudo \
+        tmux \
+        tree \
+        tzdata \
+        unzip \
+        vim \
+        wget \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /run/sshd /root/.ssh /etc/ssh/sshd_config.d \
+ && chmod 700 /root/.ssh \
+ && printf '%s\n' \
+        'PermitRootLogin prohibit-password' \
+        'PubkeyAuthentication yes' \
+        'PasswordAuthentication no' \
+        > /etc/ssh/sshd_config.d/99-skypilot.conf \
+ && git config --global --add safe.directory '*' \
+ && ln -sfn /lib/x86_64-linux-gnu/libcuda.so.1 /lib/x86_64-linux-gnu/libcuda.so \
+ && ldconfig
+
+ENV PATH=${VIRTUAL_ENV}/bin:${PATH}
+
+COPY requirements.in /tmp/requirements.in
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    curl -LsSf https://astral.sh/uv/0.5.4/install.sh | sh \
+ && . /root/.local/bin/env \
+ && uv venv --python python3.10 --no-python-downloads "${VIRTUAL_ENV}" \
+ && . "${VIRTUAL_ENV}/bin/activate" \
+ && uv pip install uv pip -r /tmp/requirements.in
+
+COPY . /opt/chai-lab
+RUN . "${VIRTUAL_ENV}/bin/activate" \
+ && pip install -e /opt/chai-lab
+
+# Pre-download Chai-1 inference assets so worker startup does not depend on
+# external model downloads. The BuildKit cache preserves interrupted downloads
+# across failed builds, and aria2 resumes the large ESM model with HTTP ranges.
+RUN --mount=type=cache,id=chai-lab-downloads,target=/tmp/chai-downloads \
+    . "${VIRTUAL_ENV}/bin/activate" \
+ && export CHAI_DOWNLOADS_DIR=/tmp/chai-downloads \
+ && mkdir -p "${CHAI_DOWNLOADS_DIR}/esm" \
+ && aria2c --continue=true --max-tries=20 --retry-wait=15 \
+      --timeout=60 --connect-timeout=30 --file-allocation=none \
+      --split=8 --max-connection-per-server=8 --min-split-size=1M \
+      --dir="${CHAI_DOWNLOADS_DIR}/esm" \
+      --out=traced_sdpa_esm2_t36_3B_UR50D_fp16.pt \
+      "$(python -c 'from chai_lab.data.dataset.embeddings.esm import ESM_URL; print(ESM_URL)')"
+
+RUN --mount=type=cache,id=chai-lab-downloads,target=/tmp/chai-downloads \
+    . "${VIRTUAL_ENV}/bin/activate" \
+ && export CHAI_DOWNLOADS_DIR=/tmp/chai-downloads \
+ && python - <<'PY'
+from chai_lab.utils.paths import cached_conformers, chai1_component
+
+cached_conformers.get_path()
+for name in [
+    "feature_embedding.pt",
+    "bond_loss_input_proj.pt",
+    "token_embedder.pt",
+    "trunk.pt",
+    "diffusion_module.pt",
+    "confidence_head.pt",
+]:
+    chai1_component(name)
+PY
+
+RUN --mount=type=cache,id=chai-lab-downloads,target=/tmp/chai-downloads \
+    mkdir -p /opt/chai-lab/downloads \
+ && cp -a /tmp/chai-downloads/. /opt/chai-lab/downloads/
+
+# Do not expose CUDA stub libraries to system tools such as tmux at runtime.
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64
+
+RUN tmux -V \
+ && "${VIRTUAL_ENV}/bin/python" -c "import torch; import chai_lab; print('torch', torch.__version__, 'cuda', torch.version.cuda); print('chai_lab', chai_lab.__file__)" \
+ && chai-lab --help >/dev/null
+
+WORKDIR /opt/chai-lab
+CMD ["bash", "-lc", "mkdir -p /run/sshd && ssh-keygen -A && exec /usr/sbin/sshd -D -e"]

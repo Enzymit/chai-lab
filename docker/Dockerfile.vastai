@@ -75,20 +75,27 @@ COPY . /opt/chai-lab
 RUN . $VIRTUAL_ENV/bin/activate \
   && pip install -e /opt/chai-lab
 
-# Pre-download Chai-1 inference assets (avoids runtime downloads)
-RUN . $VIRTUAL_ENV/bin/activate \
+# Pre-download Chai-1 inference assets (avoids runtime downloads). The
+# BuildKit cache preserves interrupted downloads across failed builds, and
+# aria2 resumes the large ESM model with HTTP ranges.
+RUN --mount=type=cache,id=chai-lab-downloads,target=/tmp/chai-downloads \
+  . $VIRTUAL_ENV/bin/activate \
+  && export CHAI_DOWNLOADS_DIR=/tmp/chai-downloads \
+  && mkdir -p "$CHAI_DOWNLOADS_DIR/esm" \
+  && aria2c --continue=true --max-tries=20 --retry-wait=15 \
+       --timeout=60 --connect-timeout=30 --file-allocation=none \
+       --split=8 --max-connection-per-server=8 --min-split-size=1M \
+       --dir="$CHAI_DOWNLOADS_DIR/esm" \
+       --out=traced_sdpa_esm2_t36_3B_UR50D_fp16.pt \
+       "$(python -c 'from chai_lab.data.dataset.embeddings.esm import ESM_URL; print(ESM_URL)')"
+
+RUN --mount=type=cache,id=chai-lab-downloads,target=/tmp/chai-downloads \
+  . $VIRTUAL_ENV/bin/activate \
+  && export CHAI_DOWNLOADS_DIR=/tmp/chai-downloads \
   && python - <<'PY2'
 from chai_lab.utils.paths import cached_conformers, chai1_component
-from chai_lab.data.dataset.embeddings.esm import ESM_URL
-from chai_lab.utils.paths import download_if_not_exists, downloads_path
 
-# core helper cache
 cached_conformers.get_path()
-
-# ESM embedding model used during inference
-download_if_not_exists(ESM_URL, downloads_path / "esm" / "traced_sdpa_esm2_t36_3B_UR50D_fp16.pt")
-
-# Chai-1 exported model components
 for name in [
     "feature_embedding.pt",
     "bond_loss_input_proj.pt",
@@ -99,6 +106,10 @@ for name in [
 ]:
     chai1_component(name)
 PY2
+
+RUN --mount=type=cache,id=chai-lab-downloads,target=/tmp/chai-downloads \
+  mkdir -p /opt/chai-lab/downloads \
+  && cp -a /tmp/chai-downloads/. /opt/chai-lab/downloads/
 
 
 WORKDIR /opt/chai-lab
