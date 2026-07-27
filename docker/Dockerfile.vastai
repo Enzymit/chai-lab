@@ -56,6 +56,10 @@ ENV \
 
 # Install dependencies in virtualenv
 COPY ./requirements.in /tmp/requirements.in
+# Keep the image compatible with AWS CUDA 12.6 drivers and newer Vast CUDA
+# 12.8 drivers.  A cu126 wheel runs on both host driver versions.
+ARG PYTORCH_VERSION=2.7.1
+ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu126
 # from https://pythonspeed.com/articles/activate-virtualenv-dockerfile/
 # a trick to have virtualenv "always activated"
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
@@ -67,7 +71,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
   && uv venv --no-python-downloads $VIRTUAL_ENV \
   # this is sh, not bash, so . not source
   && . $VIRTUAL_ENV/bin/activate \
-  && uv pip install uv pip -r /tmp/requirements.in
+  && uv pip install uv pip \
+  && uv pip install "torch==${PYTORCH_VERSION}" --index-url "${PYTORCH_INDEX_URL}" \
+  && sed '/^torch[<>=!~]/d' /tmp/requirements.in > /tmp/requirements.no-torch.in \
+  && uv pip install -r /tmp/requirements.no-torch.in
 
 
 # Install chai_lab package
@@ -120,5 +127,8 @@ RUN echo "PATH=\"$PATH\"" >> /etc/environment \
   && echo "LC_ALL=\"$LC_ALL\"" >> /etc/environment \
   && echo "LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\"" >> /etc/environment \
   && echo "EDITOR=\"$EDITOR\"" >> /etc/environment
+
+RUN . $VIRTUAL_ENV/bin/activate \
+  && python -c "import torch; import chai_lab; assert torch.version.cuda == '12.6', torch.version.cuda; print('torch', torch.__version__, 'cuda', torch.version.cuda); print('chai_lab', chai_lab.__file__)"
 
 # no startup command.
